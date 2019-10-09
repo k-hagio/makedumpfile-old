@@ -56,6 +56,9 @@ static void first_cycle(mdf_pfn_t start, mdf_pfn_t max, struct cycle *cycle)
 	if (cycle->end_pfn > max)
 		cycle->end_pfn = max;
 
+	if (info->flag_elf_dumpfile && cycle->start_pfn < start)
+		cycle->start_pfn = start;
+
 	cycle->exclude_pfn_start = 0;
 	cycle->exclude_pfn_end = 0;
 }
@@ -6855,6 +6858,7 @@ write_elf_header(struct cache_data *cd_header)
 		ERRMSG("Can't get a number of PT_LOAD.\n");
 		goto out;
 	}
+	DEBUG_MSG("num_loads_dumpfile=%d\n", num_loads_dumpfile);
 
 	if (is_elf64_memory()) { /* ELF64 */
 		if (!get_elf64_ehdr(info->fd_memory,
@@ -6866,6 +6870,7 @@ write_elf_header(struct cache_data *cd_header)
 		 * PT_NOTE(1) + PT_LOAD(1+)
 		 */
 		ehdr64.e_phnum = 1 + num_loads_dumpfile;
+		DEBUG_MSG("ehdr64.e_phnum=%hu\n", ehdr64.e_phnum);
 	} else {                /* ELF32 */
 		if (!get_elf32_ehdr(info->fd_memory,
 				    info->name_memory, &ehdr32)) {
@@ -6934,6 +6939,7 @@ write_elf_header(struct cache_data *cd_header)
 	offset_note_memory = note.p_offset;
 	note.p_offset      = offset_note_dumpfile;
 	size_note          = note.p_filesz;
+	DEBUG_MSG("note.p_offset=0x%lx .p_filesz=0x%lx\n", note.p_offset, note.p_filesz);
 
 	/*
 	 * Reserve a space to store the whole program headers.
@@ -6955,6 +6961,7 @@ write_elf_header(struct cache_data *cd_header)
 					roundup(size_eraseinfo, 4);
 	}
 
+	DEBUG_MSG("note cd_header->offset=0x%lx\n", cd_header->offset);
 	if (!write_elf_phdr(cd_header, &note))
 		goto out;
 
@@ -7499,7 +7506,7 @@ get_loads_dumpfile_cyclic(void)
 				if (!create_2nd_bitmap(&cycle))
 					return FALSE;
 			}
-			for (pfn = MAX(pfn_start, cycle.start_pfn); pfn < cycle.end_pfn; pfn++) {
+			for (pfn = cycle.start_pfn; pfn < cycle.end_pfn; pfn++) {
 				if (!is_dumpable(info->bitmap2, pfn, &cycle)) {
 					num_excluded++;
 					continue;
@@ -7585,6 +7592,7 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 		if (frac_tail)
 			pfn_end++;
 
+		DEBUG_MSG("pS:  %10llx pE:%10llx\n", pfn_start, pfn_end);
 		for_each_cycle(pfn_start, pfn_end, &cycle) {
 			/*
 			 * Update target region and partial bitmap if necessary.
@@ -7594,7 +7602,11 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 					return FALSE;
 			}
 
-			for (pfn = MAX(pfn_start, cycle.start_pfn); pfn < cycle.end_pfn; pfn++) {
+			DEBUG_MSG("  cS:%10llx cE:%10llx\n", cycle.start_pfn, cycle.end_pfn);
+			for (pfn = cycle.start_pfn; pfn < cycle.end_pfn; pfn++) {
+				if (info->flag_cyclic)
+					pfn_memhole--;
+
 				if (!is_dumpable(info->bitmap2, pfn, &cycle)) {
 					num_excluded++;
 					if ((pfn == pfn_end - 1) && frac_tail)
@@ -7659,16 +7671,20 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 				/*
 				 * Write a PT_LOAD header.
 				 */
+				DEBUG_MSG("    head->off=%10lx load.p_addr=%10lx .p_off=%10lx .filesz=%10lx .memsz=%10lx",
+					cd_header->offset, load.p_paddr, load.p_offset, load.p_filesz, load.p_memsz);
 				if (!write_elf_phdr(cd_header, &load))
 					return FALSE;
 
 				/*
 				 * Write a PT_LOAD segment.
 				 */
-				if (load.p_filesz)
+				if (load.p_filesz) {
+					DEBUG_MSG(" page->off=%10lx\n", cd_page->offset);
 					if (!write_elf_load_segment(cd_page, paddr,
 								    off_memory, load.p_filesz))
 						return FALSE;
+				} else { DEBUG_MSG("\n"); }
 
 				load.p_paddr += load.p_memsz;
 #ifdef __x86__
@@ -7701,16 +7717,20 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 		/*
 		 * Write a PT_LOAD header.
 		 */
+		DEBUG_MSG("  head->off=%10lx load.p_addr=%10lx .p_off=%10lx .filesz=%10lx .memsz=%10lx",
+			cd_header->offset, load.p_paddr, load.p_offset, load.p_filesz, load.p_memsz);
 		if (!write_elf_phdr(cd_header, &load))
 			return FALSE;
 
 		/*
 		 * Write a PT_LOAD segment.
 		 */
-		if (load.p_filesz)
+		if (load.p_filesz) {
+			DEBUG_MSG(" page->off=%10lx\n", cd_page->offset);
 			if (!write_elf_load_segment(cd_page, paddr,
 						    off_memory, load.p_filesz))
 				return FALSE;
+		} else { DEBUG_MSG("\n"); }
 
 		off_seg_load += load.p_filesz;
 	}
@@ -7718,6 +7738,7 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 		return FALSE;
 	if (!write_cache_bufsz(cd_page))
 		return FALSE;
+	DEBUG_MSG("head->off=%10lx page->off=%10lx\n", cd_header->offset, cd_page->offset);
 
 	free_bitmap2_buffer();
 
