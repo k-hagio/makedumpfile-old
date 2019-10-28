@@ -41,6 +41,8 @@ typedef struct {
 
 static int pgtable_level;
 static int va_bits;
+static int va_bits_actual;
+static unsigned long page_end;
 static unsigned long kimage_voffset;
 
 #define SZ_4K			(4 * 1024)
@@ -109,6 +111,13 @@ static unsigned long kimage_voffset;
 static unsigned long long
 __pa(unsigned long vaddr)
 {
+	if (va_bits_actual) {
+		if (vaddr >= page_end)
+			return (vaddr - kimage_voffset);
+		else
+			return (vaddr - PAGE_OFFSET + info->phys_base);
+	}
+
 	if (kimage_voffset == NOT_FOUND_NUMBER ||
 			(vaddr >= PAGE_OFFSET))
 		return (vaddr - PAGE_OFFSET + info->phys_base);
@@ -150,7 +159,8 @@ static int calculate_plat_config(void)
 	if ((PAGESIZE() == SZ_16K && va_bits == 36) ||
 			(PAGESIZE() == SZ_64K && va_bits == 42)) {
 		pgtable_level = 2;
-	} else if ((PAGESIZE() == SZ_64K && va_bits == 48) ||
+	} else if ((PAGESIZE() == SZ_64K && va_bits == 52) ||
+			(PAGESIZE() == SZ_64K && va_bits == 48) ||
 			(PAGESIZE() == SZ_4K && va_bits == 39) ||
 			(PAGESIZE() == SZ_16K && va_bits == 47)) {
 		pgtable_level = 3;
@@ -319,7 +329,12 @@ get_machdep_info_arm64(void)
 	}
 
 	kimage_voffset = NUMBER(kimage_voffset);
-	info->max_physmem_bits = PHYS_MASK_SHIFT;
+	if (NUMBER(MAX_PHYSMEM_BITS) != NOT_FOUND_NUMBER)
+		info->max_physmem_bits = NUMBER(MAX_PHYSMEM_BITS);
+	else if (va_bits == 52)
+		info->max_physmem_bits = 52;
+	else
+		info->max_physmem_bits = PHYS_MASK_SHIFT;
 	info->section_size_bits = SECTIONS_SIZE_BITS;
 
 	DEBUG_MSG("kimage_voffset   : %lx\n", kimage_voffset);
@@ -358,26 +373,41 @@ get_versiondep_info_arm64(void)
 		return FALSE;
 	}
 
-	/* Derive va_bits as per arch/arm64/Kconfig */
-	if ((_stext & PAGE_OFFSET_36) == PAGE_OFFSET_36) {
-		va_bits = 36;
-	} else if ((_stext & PAGE_OFFSET_39) == PAGE_OFFSET_39) {
-		va_bits = 39;
-	} else if ((_stext & PAGE_OFFSET_42) == PAGE_OFFSET_42) {
-		va_bits = 42;
-	} else if ((_stext & PAGE_OFFSET_47) == PAGE_OFFSET_47) {
-		va_bits = 47;
-	} else if ((_stext & PAGE_OFFSET_48) == PAGE_OFFSET_48) {
-		va_bits = 48;
+	if (NUMBER(VA_BITS) != NOT_FOUND_NUMBER) {
+		va_bits = NUMBER(VA_BITS);
 	} else {
-		ERRMSG("Cannot find a proper _stext for calculating VA_BITS\n");
-		return FALSE;
+		/* Derive va_bits as per arch/arm64/Kconfig */
+		if ((_stext & PAGE_OFFSET_36) == PAGE_OFFSET_36) {
+			va_bits = 36;
+		} else if ((_stext & PAGE_OFFSET_39) == PAGE_OFFSET_39) {
+			va_bits = 39;
+		} else if ((_stext & PAGE_OFFSET_42) == PAGE_OFFSET_42) {
+			va_bits = 42;
+		} else if ((_stext & PAGE_OFFSET_47) == PAGE_OFFSET_47) {
+			va_bits = 47;
+		} else if ((_stext & PAGE_OFFSET_48) == PAGE_OFFSET_48) {
+			va_bits = 48;
+		} else {
+			ERRMSG("Cannot find a proper _stext for calculating VA_BITS\n");
+			return FALSE;
+		}
 	}
 
-	info->page_offset = (0xffffffffffffffffUL) << (va_bits - 1);
+	if (NUMBER(vabits_actual) != NOT_FOUND_NUMBER) {
+		va_bits_actual = NUMBER(vabits_actual);
+	}
+
+	if (va_bits_actual) {
+		info->page_offset = (0xffffffffffffffffUL) << va_bits_actual;
+		page_end = (0xffffffffffffffffUL) << (va_bits_actual - 1);
+	} else
+		info->page_offset = (0xffffffffffffffffUL) << (va_bits - 1);
 
 	DEBUG_MSG("va_bits      : %d\n", va_bits);
 	DEBUG_MSG("page_offset  : %lx\n", info->page_offset);
+
+	DEBUG_MSG("va_bits_actual : %d\n", va_bits_actual);
+	DEBUG_MSG("PTRS_PER_PGD   : %d\n", PTRS_PER_PGD);
 
 	return TRUE;
 }
@@ -423,6 +453,7 @@ vaddr_to_paddr_arm64(unsigned long vaddr)
 		/* 1GB section for Page Table level = 4 and Page Size = 4KB */
 		paddr = (pud_val(pudv) & (PUD_MASK & PMD_SECTION_MASK))
 					+ (vaddr & (PUD_SIZE - 1));
+		DEBUG_MSG("vtop: vaddr=%lx paddr=%llx\n", vaddr, paddr);
 		return paddr;
 	}
 
@@ -457,6 +488,7 @@ vaddr_to_paddr_arm64(unsigned long vaddr)
 		break;
 	}
 
+	DEBUG_MSG("vtop: vaddr=%lx paddr=%llx\n", vaddr, paddr);
 	return paddr;
 }
 
