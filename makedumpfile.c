@@ -56,6 +56,9 @@ static void first_cycle(mdf_pfn_t start, mdf_pfn_t max, struct cycle *cycle)
 	if (cycle->end_pfn > max)
 		cycle->end_pfn = max;
 
+	if (info->flag_elf_dumpfile && cycle->start_pfn < start)
+		cycle->start_pfn = start;
+
 	cycle->exclude_pfn_start = 0;
 	cycle->exclude_pfn_end = 0;
 }
@@ -89,6 +92,7 @@ mdf_pfn_t pfn_user;
 mdf_pfn_t pfn_free;
 mdf_pfn_t pfn_hwpoison;
 mdf_pfn_t pfn_offline;
+mdf_pfn_t pfn_elf_excluded;
 
 mdf_pfn_t num_dumped;
 
@@ -7499,7 +7503,7 @@ get_loads_dumpfile_cyclic(void)
 				if (!create_2nd_bitmap(&cycle))
 					return FALSE;
 			}
-			for (pfn = MAX(pfn_start, cycle.start_pfn); pfn < cycle.end_pfn; pfn++) {
+			for (pfn = cycle.start_pfn; pfn < cycle.end_pfn; pfn++) {
 				if (!is_dumpable(info->bitmap2, pfn, &cycle)) {
 					num_excluded++;
 					continue;
@@ -7594,7 +7598,10 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 					return FALSE;
 			}
 
-			for (pfn = MAX(pfn_start, cycle.start_pfn); pfn < cycle.end_pfn; pfn++) {
+			for (pfn = cycle.start_pfn; pfn < cycle.end_pfn; pfn++) {
+				if (info->flag_cyclic)
+					pfn_memhole--;
+
 				if (!is_dumpable(info->bitmap2, pfn, &cycle)) {
 					num_excluded++;
 					if ((pfn == pfn_end - 1) && frac_tail)
@@ -7638,6 +7645,9 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 					num_excluded = 0;
 					continue;
 				}
+
+				/* The number of pages excluded actually in ELF format */
+				pfn_elf_excluded += num_excluded;
 
 				/*
 				 * If the number of the contiguous pages to be excluded
@@ -7690,6 +7700,9 @@ write_elf_pages_cyclic(struct cache_data *cd_header, struct cache_data *cd_page)
 				filesz = page_size;
 			}
 		}
+
+		/* The number of pages excluded actually in ELF format */
+		pfn_elf_excluded += num_excluded;
 
 		/*
 		 * Write the last PT_LOAD.
@@ -9777,6 +9790,9 @@ print_report(void)
 	REPORT_MSG("\n");
 	REPORT_MSG("Original pages  : 0x%016llx\n", pfn_original);
 	REPORT_MSG("  Excluded pages   : 0x%016llx\n", pfn_excluded);
+	if (info->flag_elf_dumpfile)
+		REPORT_MSG("     in ELF format : 0x%016llx\n",
+			pfn_elf_excluded);
 	REPORT_MSG("    Pages filled with zero  : 0x%016llx\n", pfn_zero);
 	REPORT_MSG("    Non-private cache pages : 0x%016llx\n", pfn_cache);
 	REPORT_MSG("    Private cache pages     : 0x%016llx\n",
@@ -9787,6 +9803,13 @@ print_report(void)
 	REPORT_MSG("    Offline pages           : 0x%016llx\n", pfn_offline);
 	REPORT_MSG("  Remaining pages  : 0x%016llx\n",
 	    pfn_original - pfn_excluded);
+
+	if (info->flag_elf_dumpfile) {
+		REPORT_MSG("     in ELF format : 0x%016llx\n",
+			pfn_original - pfn_elf_excluded);
+
+		pfn_excluded = pfn_elf_excluded;
+	}
 
 	if (pfn_original != 0) {
 		shrinking = (pfn_original - pfn_excluded) * 100;
